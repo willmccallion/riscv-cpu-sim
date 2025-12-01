@@ -46,6 +46,10 @@ impl SimStats {
         };
         println!("  IPC:                  {:.4}", ipc);
 
+        let cpi = 1.0 / ipc;
+
+        println!("  CPI:                  {:.4}", cpi);
+
         println!("\n[Execution Time Distribution]");
         let total_cycles = self.cycles as f64;
         if total_cycles > 0.0 {

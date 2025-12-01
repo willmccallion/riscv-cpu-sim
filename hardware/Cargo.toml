@@ -1,10 +1,10 @@
 [package]
-name = "riscv-cpu-sim"
+name = "riscv-cpu"
 version = "2.0.0"
 edition = "2024"
-build = "build.rs"
 
 [dependencies]
+clap = { version = "4.4", features = ["derive"] }
 
 [features]
 always-trace = []

@@ -1,8 +1,8 @@
 #include "stdio.h"
+#include "stdlib.h"
 
 #define WIDTH 60
 #define HEIGHT 30
-#define MAX_ITER 32
 
 #define SHIFT 12
 #define ONE (1 << SHIFT)
@@ -14,7 +14,6 @@ long soft_mul(long a, long b) {
   long result = 0;
   int negative = 0;
 
-  // Handle signs
   if (a < 0) {
     a = -a;
     negative = !negative;
@@ -24,15 +23,12 @@ long soft_mul(long a, long b) {
     negative = !negative;
   }
 
-  // Shift and Add
   while (b > 0) {
-    if (b & 1) {
+    if (b & 1)
       result += a;
-    }
     a <<= 1;
     b >>= 1;
   }
-
   return negative ? -result : result;
 }
 
@@ -42,10 +38,21 @@ long fix_mul(long a, long b) {
 }
 
 int main() {
-  printf("Rendering Mandelbrot Set (Software Multiply)...\n");
-  printf("Resolution: %dx%d\n", WIDTH, HEIGHT);
+  char buf[16];
+  int max_iter = 32;
 
-  // Viewport: x from -2.0 to 1.0, y from -1.0 to 1.0
+  printf("Mandelbrot Set\n");
+  printf("Enter Max Iterations (default 32): ");
+
+  gets(buf, 16);
+  if (buf[0] != 0) {
+    max_iter = atoi(buf);
+  }
+  if (max_iter <= 0)
+    max_iter = 32;
+
+  printf("Rendering with %d iterations...\n", max_iter);
+
   long x_min = TO_FIX(-2);
   long x_max = TO_FIX(1);
   long y_min = TO_FIX(-1);
@@ -61,33 +68,25 @@ int main() {
 
     for (int x_pix = 0; x_pix < WIDTH; x_pix++) {
       long cx = x_min + soft_mul(x_pix, dx);
-
       long zx = 0;
       long zy = 0;
       int iter = 0;
 
-      // Z = Z^2 + C
-      while (iter < MAX_ITER) {
+      while (iter < max_iter) {
         long zx2 = fix_mul(zx, zx);
         long zy2 = fix_mul(zy, zy);
-
-        if ((zx2 + zy2) > TO_FIX(4)) {
+        if ((zx2 + zy2) > TO_FIX(4))
           break;
-        }
-
         long two_zx_zy = fix_mul(zx, zy) << 1;
-
-        long zx_new = zx2 - zy2 + cx;
+        zx = zx2 - zy2 + cx;
         zy = two_zx_zy + cy;
-        zx = zx_new;
-
         iter++;
       }
 
-      if (iter == MAX_ITER) {
+      if (iter == max_iter) {
         printf(" ");
       } else {
-        int char_idx = iter & 7;
+        int char_idx = iter % 10;
         printf("%c", chars[char_idx]);
       }
     }
