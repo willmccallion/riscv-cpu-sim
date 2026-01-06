@@ -13,8 +13,6 @@ use devices::{Bus, VirtualDisk};
 use memory::{BASE_ADDRESS, Memory};
 
 // The Bootloader is "Firmware" (ROM).
-// We include it directly.
-// IMPORTANT: Ensure hardware/software/bootloader/boot.bin exists!
 const BIOS_BYTES: &[u8] = include_bytes!("../bootloader/boot.bin");
 
 #[derive(Parser, Debug)]
@@ -35,11 +33,9 @@ fn main() {
     println!("RISC-V CPU Simulator v1.0");
     println!("-------------------------");
 
-    // 1. Initialize Memory with BIOS
     let mut mem = Memory::new();
     mem.load(BIOS_BYTES, 0);
 
-    // 2. Load Disk Image
     println!("[*] Mounting Disk: {}", args.disk);
     let disk_data = fs::read(&args.disk).unwrap_or_else(|_| {
         eprintln!("Error: Could not read disk image '{}'", args.disk);
@@ -49,14 +45,12 @@ fn main() {
     let mut disk = VirtualDisk::new();
     disk.load(disk_data);
 
-    // 3. Setup Bus & CPU
     let uart = devices::Uart::new();
     let bus = Bus::new(mem, uart, disk);
     let mut cpu = Cpu::new(BASE_ADDRESS, args.trace, bus);
 
     println!("[*] CPU Reset. Execution started.");
 
-    // 4. Run
     loop {
         if let Err(e) = cpu.tick() {
             eprintln!("\n[!] FATAL TRAP: {}", e);
@@ -66,8 +60,6 @@ fn main() {
         }
 
         if let Some(code) = cpu.take_exit() {
-            println!("\n-------------------------");
-            println!("[*] CPU Halted. Exit Code: {}", code);
             cpu.print_stats();
             process::exit(code as i32);
         }

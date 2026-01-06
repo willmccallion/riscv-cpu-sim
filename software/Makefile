@@ -16,8 +16,8 @@ CFLAGS = -march=rv64g -mabi=lp64 -mcmodel=medany -ffreestanding -nostdlib -g -O0
 # --- Kernel Build ---
 KERN_CFLAGS = $(CFLAGS) -I$(KERN_DIR)/include
 
-# 1. Find C files
-KERN_SRC_DIRS = $(KERN_DIR) $(KERN_DIR)/drivers $(KERN_DIR)/lib $(KERN_DIR)/fs
+# 1. Find C files (Added kernel/mm here)
+KERN_SRC_DIRS = $(KERN_DIR) $(KERN_DIR)/drivers $(KERN_DIR)/lib $(KERN_DIR)/fs $(KERN_DIR)/mm
 KERN_C_SRCS = $(foreach dir, $(KERN_SRC_DIRS), $(wildcard $(dir)/*.c))
 
 # 2. Define Objects
@@ -45,10 +45,12 @@ USER_S_BINS = $(patsubst $(USER_DIR)/%.s, $(BIN_DIR)/%.bin, $(USER_S_SRCS))
 
 all: dirs disk
 
+# Added kernel/mm to mkdir
 dirs:
 	@mkdir -p $(BUILD_DIR)/kernel/drivers \
 	          $(BUILD_DIR)/kernel/lib \
 	          $(BUILD_DIR)/kernel/fs \
+	          $(BUILD_DIR)/kernel/mm \
 	          $(BUILD_DIR)/libc \
 	          $(BUILD_DIR)/user \
 	          $(BIN_DIR)
@@ -73,10 +75,10 @@ $(BUILD_DIR)/kernel/entry.o: $(KERN_DIR)/entry.s
 	@echo "  AS (Kern) $<"
 	@$(CC) $(KERN_CFLAGS) -c $< -o $@
 
-# LINKER STEP: Put KERN_ENTRY_OBJ first!
+# LINKER STEP: Uses kernel.ld now
 $(KERN_BIN): $(KERN_ENTRY_OBJ) $(KERN_C_OBJS)
 	@echo "  LD (Kern) $@"
-	@$(LD) -Ttext 0x80100000 $(KERN_ENTRY_OBJ) $(KERN_C_OBJS) -o $(BUILD_DIR)/kernel.elf
+	@$(LD) -T $(KERN_DIR)/kernel.ld $(KERN_ENTRY_OBJ) $(KERN_C_OBJS) -o $(BUILD_DIR)/kernel.elf
 	@$(OBJCOPY) -O binary $(BUILD_DIR)/kernel.elf $@
 
 # --- Compile User Apps ---

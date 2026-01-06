@@ -105,20 +105,194 @@ impl Cpu {
         }
     }
 
-    /// Simulates MMU translation.
-    pub fn translate(&mut self, vaddr: u64, _access: AccessType) -> (u64, u64, Option<String>) {
-        let satp = self.csrs.satp;
-        let mode = (satp >> 60) & 0xF;
+    /// Simulates MMU translation (Sv39).
+    pub fn translate(&mut self, vaddr: u64, access: AccessType) -> (u64, u64, Option<String>) {
+        // 1. Check Mode (satp.MODE)
+        // 0 = Bare, 8 = Sv39.
+        let mode = (self.csrs.satp >> 60) & 0xF;
 
+        // Machine mode (3) always uses physical addresses.
+        // Mode 0 means no translation.
         if self.privilege == 3 || mode == 0 {
             return (vaddr, 0, None);
         }
 
-        let tlb_hit = (self.stats.cycles % 100) != 0;
-        if tlb_hit {
-            (vaddr, 0, None)
-        } else {
-            (vaddr, 20, None)
+        if mode != 8 {
+            return (vaddr, 0, Some(format!("Unsupported paging mode: {}", mode)));
+        }
+
+        // 2. Setup Walk
+        // satp.PPN is bits 0-43
+        let root_ppn = self.csrs.satp & 0xFFF_FFFF_FFFF;
+        let mut pt_addr = root_ppn << 12; // 4096 * PPN
+        let mut level = 2; // Levels: 2, 1, 0
+        let mut cycles = 0;
+
+        loop {
+            // 3. Read PTE
+            // VPN[2] = bits 30-38, VPN[1] = 21-29, VPN[0] = 12-20
+            let vpn = (vaddr >> (12 + 9 * level)) & 0x1FF;
+            let pte_addr = pt_addr + (vpn * 8);
+
+            // Accessing the page table is a memory read
+            let pte = self.bus.read_u64(pte_addr);
+            cycles += 10; // Penalty for page walk access
+
+            // 4. Check Valid (V=1)
+            if (pte & 1) == 0 {
+                return (
+                    vaddr,
+                    cycles,
+                    Some(format!("Page Fault (Invalid PTE) @ {:#x}", vaddr)),
+                );
+            }
+
+            // 5. Check Leaf
+            let r = (pte >> 1) & 1;
+            let w = (pte >> 2) & 1;
+            let x = (pte >> 3) & 1;
+
+            // W=1, R=0 is reserved/invalid
+            if r == 0 && w == 1 {
+                return (vaddr, cycles, Some("Page Fault (W=1, R=0)".to_string()));
+            }
+
+            if r == 1 || x == 1 {
+                // --- Leaf Page Found ---
+
+                // 6. Check Permissions
+                let u = (pte >> 4) & 1;
+
+                // User mode (0) needs U=1
+                if self.privilege == 0 && u == 0 {
+                    return (
+                        vaddr,
+                        cycles,
+                        Some("Page Fault (User accessing Supervisor page)".to_string()),
+                    );
+                }
+
+                // Supervisor mode (1) needs U=0 (unless SUM is set, but we enforce U=0 for simplicity)
+                if self.privilege == 1 && u == 1 {
+                    // Check SUM bit in sstatus (bit 18)
+                    let sum = (self.csrs.sstatus >> 18) & 1;
+                    if sum == 0 {
+                        return (
+                            vaddr,
+                            cycles,
+                            Some(
+                                "Page Fault (Supervisor accessing User page with SUM=0)"
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                }
+
+                match access {
+                    AccessType::Read => {
+                        if r == 0 {
+                            // MXR (Make Executable Readable) bit 19 in sstatus could allow reading X pages
+                            let mxr = (self.csrs.sstatus >> 19) & 1;
+                            if mxr == 0 || x == 0 {
+                                return (
+                                    vaddr,
+                                    cycles,
+                                    Some("Page Fault (Not Readable)".to_string()),
+                                );
+                            }
+                        }
+                    }
+                    AccessType::Write => {
+                        if w == 0 {
+                            return (vaddr, cycles, Some("Page Fault (Not Writable)".to_string()));
+                        }
+                    }
+                    AccessType::Execute => {
+                        if x == 0 {
+                            return (
+                                vaddr,
+                                cycles,
+                                Some("Page Fault (Not Executable)".to_string()),
+                            );
+                        }
+                    }
+                }
+
+                // 7. A/D Bits (Accessed / Dirty)
+                let mut new_pte = pte;
+                let a = (pte >> 6) & 1;
+                let d = (pte >> 7) & 1;
+                let mut update_pte = false;
+
+                // Set Accessed bit
+                if a == 0 {
+                    new_pte |= 1 << 6;
+                    update_pte = true;
+                }
+
+                // Set Dirty bit if writing
+                if access == AccessType::Write && d == 0 {
+                    new_pte |= 1 << 7;
+                    update_pte = true;
+                }
+
+                if update_pte {
+                    self.bus.write_u64(pte_addr, new_pte);
+                    cycles += 10;
+                }
+
+                // 8. Calculate Physical Address
+                // PPN from PTE is bits 10..53
+                let pte_ppn = (pte >> 10) & 0xFFF_FFFF_FFFF;
+
+                // Handle Superpages (if level > 0)
+                if level > 0 {
+                    // Alignment check: PPN bits for lower levels must be 0
+                    // For level=1 (2MB), bottom 9 bits of PPN must be 0
+                    // For level=2 (1GB), bottom 18 bits of PPN must be 0
+                    let mask = (1 << (9 * level)) - 1;
+                    if (pte_ppn & mask) != 0 {
+                        return (
+                            vaddr,
+                            cycles,
+                            Some("Page Fault (Misaligned Superpage)".to_string()),
+                        );
+                    }
+                }
+
+                // Offset within the page (or superpage)
+                let offset_mask = (1 << (12 + 9 * level)) - 1;
+                let offset = vaddr & offset_mask;
+
+                // Physical address = (PTE.PPN << 12) | Offset
+                // Note: For superpages, we must mask the PPN to the superpage alignment
+                // But since we checked alignment above, simple OR works if we mask PPN correctly.
+                // Correct logic:
+                // PA.ppn[2] = PTE.ppn[2]
+                // PA.ppn[1] = PTE.ppn[1] (if level < 2) else vaddr.vpn[1]
+                // PA.ppn[0] = PTE.ppn[0] (if level < 1) else vaddr.vpn[0]
+                //
+                // Easier way:
+                // Mask PTE_PPN to clear lower bits based on level, then OR offset.
+                // But we already verified lower bits are 0.
+                let paddr = (pte_ppn << 12) | offset;
+
+                return (paddr, cycles, None);
+            }
+
+            // 9. Next Level
+            level -= 1;
+            if level < 0 {
+                return (
+                    vaddr,
+                    cycles,
+                    Some("Page Fault (Leaf not found)".to_string()),
+                );
+            }
+
+            // PPN is bits 10-53
+            let next_ppn = (pte >> 10) & 0xFFF_FFFF_FFFF;
+            pt_addr = next_ppn << 12;
         }
     }
 
@@ -184,16 +358,26 @@ impl Cpu {
 
         let mut sstatus = self.csrs.sstatus;
         if self.privilege == 0 {
-            sstatus &= !(1 << 8);
+            sstatus &= !(1 << 8); // Clear SPP (User)
         } else {
-            sstatus |= 1 << 8;
+            sstatus |= 1 << 8; // Set SPP (Supervisor)
         }
+        // SPIE = SIE
+        let sie = (sstatus >> 1) & 1;
+        if sie != 0 {
+            sstatus |= 1 << 5;
+        } else {
+            sstatus &= !(1 << 5);
+        }
+        // SIE = 0
+        sstatus &= !2;
+
         self.csrs.sstatus = sstatus;
 
         let vector = self.csrs.stvec & !3;
         self.pc = vector;
 
-        self.privilege = 1;
+        self.privilege = 1; // Trap to Supervisor
 
         self.if_id = Default::default();
         self.id_ex = Default::default();
@@ -406,6 +590,15 @@ impl Cpu {
 
         let spp = (self.csrs.sstatus >> 8) & 1;
         self.privilege = spp as u8;
+
+        // Restore SPIE to SIE
+        let spie = (self.csrs.sstatus >> 5) & 1;
+        if spie != 0 {
+            self.csrs.sstatus |= 2; // SIE = 1
+        } else {
+            self.csrs.sstatus &= !2; // SIE = 0
+        }
+        self.csrs.sstatus |= 1 << 5; // SPIE = 1
 
         self.if_id = IFID::default();
         self.id_ex = IDEx::default();

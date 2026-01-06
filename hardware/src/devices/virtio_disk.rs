@@ -40,6 +40,7 @@ impl VirtualDisk {
             self.data[o]
         }
     }
+
     pub fn read_u16(&self, addr: u64) -> u16 {
         if Self::is_size_reg(addr) {
             let o = (addr - VIRTUAL_DISK_SIZE_ADDRESS) as usize;
@@ -49,6 +50,7 @@ impl VirtualDisk {
             u16::from_le_bytes(self.data[o..o + 2].try_into().unwrap())
         }
     }
+
     pub fn read_u32(&self, addr: u64) -> u32 {
         if Self::is_size_reg(addr) {
             let o = (addr - VIRTUAL_DISK_SIZE_ADDRESS) as usize;
@@ -58,12 +60,57 @@ impl VirtualDisk {
             u32::from_le_bytes(self.data[o..o + 4].try_into().unwrap())
         }
     }
+
     pub fn read_u64(&self, addr: u64) -> u64 {
         if (VIRTUAL_DISK_SIZE_ADDRESS..VIRTUAL_DISK_SIZE_ADDRESS + 8).contains(&addr) {
             u64::from_le_bytes(self.size_le())
         } else {
             let o = (addr - VIRTUAL_DISK_ADDRESS) as usize;
             u64::from_le_bytes(self.data[o..o + 8].try_into().unwrap())
+        }
+    }
+
+    pub fn write_u8(&mut self, addr: u64, val: u8) {
+        if Self::is_size_reg(addr) {
+            return; // Size register is Read-Only
+        }
+        let o = (addr - VIRTUAL_DISK_ADDRESS) as usize;
+        if o < self.data.len() {
+            self.data[o] = val;
+        }
+    }
+
+    pub fn write_u16(&mut self, addr: u64, val: u16) {
+        if Self::is_size_reg(addr) {
+            return;
+        }
+        let o = (addr - VIRTUAL_DISK_ADDRESS) as usize;
+        if o + 2 <= self.data.len() {
+            let bytes = val.to_le_bytes();
+            self.data[o] = bytes[0];
+            self.data[o + 1] = bytes[1];
+        }
+    }
+
+    pub fn write_u32(&mut self, addr: u64, val: u32) {
+        if Self::is_size_reg(addr) {
+            return;
+        }
+        let o = (addr - VIRTUAL_DISK_ADDRESS) as usize;
+        if o + 4 <= self.data.len() {
+            let bytes = val.to_le_bytes();
+            self.data[o..o + 4].copy_from_slice(&bytes);
+        }
+    }
+
+    pub fn write_u64(&mut self, addr: u64, val: u64) {
+        if Self::is_size_reg(addr) {
+            return;
+        }
+        let o = (addr - VIRTUAL_DISK_ADDRESS) as usize;
+        if o + 8 <= self.data.len() {
+            let bytes = val.to_le_bytes();
+            self.data[o..o + 8].copy_from_slice(&bytes);
         }
     }
 }

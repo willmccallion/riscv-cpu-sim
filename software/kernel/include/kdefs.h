@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 // Memory Layout
-#define KERNEL_SIZE 16384
+// Increased to 64KB to match mkfs.py
+#define KERNEL_SIZE 65536
 #define RAM_USER_BASE 0x80200000
 
 // ANSI Colors

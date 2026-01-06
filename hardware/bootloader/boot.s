@@ -17,7 +17,7 @@
 #   None
 #
 # Returns:
-#   a0: The size of the kernel (4096 bytes) passed to the kernel.
+#   a0: The size of the kernel (65536 bytes) passed to the kernel.
 #
 # Register Usage:
 #   s0: Disk source pointer (0x90000000)
@@ -35,7 +35,8 @@ _start:
     slli s0, s0, 28                           # s0 <- 0x90000000 (Disk Base)
 
     # Number of bytes to copy from disk to RAM.
-    li s2, 16384                              # s2 <- 4096 (Kernel Size)
+    # CHANGED: Increased from 16384 to 65536 (64KB)
+    li s2, 65536
 
 copy_loop:
     # Simple byte-wise copy loop. Keeps boot code small and reliable.
@@ -64,8 +65,9 @@ copy_done:
     slli t0, t0, 20                           # t0 <- 0x80100000 (Kernel Entry)
     csrrw zero, mepc, t0                      # mepc <- Kernel Entry Address
 
-    # Put 4096 into a0 so the kernel knows the correct size.
-    lui a0, 1                                 # a0 <- 4096 (0x1000)
+    # Put 65536 into a0 so the kernel knows the correct size.
+    # CHANGED: lui a0, 16 loads 0x10000 (65536) into a0
+    lui a0, 16
     mret                                      # Return from exception (Jump to Kernel)
 
 hang:

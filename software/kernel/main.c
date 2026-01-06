@@ -2,14 +2,31 @@
 #include "fs.h"
 #include "kdefs.h"
 #include "klib.h"
+#include "mm.h"
 
 void print_banner() {
   kprint("\n");
-  kprint(ANSI_CYAN "RISC-V MicroKernel v2.1.0 (Modular)" ANSI_RESET "\n");
+  kprint(ANSI_CYAN "RISC-V MicroKernel v2.2.0" ANSI_RESET "\n");
   kprint("Build: " __DATE__ " " __TIME__ "\n");
   kprint("CPUs: 1 | RAM: 128MB | Arch: rv64im\n\n");
 
   kprint("[ " ANSI_GREEN "OK" ANSI_RESET " ] Initializing UART...\n");
+
+  // Initialize Physical Memory Manager
+  kinit();
+  kprint("[ " ANSI_GREEN "OK" ANSI_RESET " ] Physical Memory Manager...\n");
+
+  // Test Allocation to ensure PMM works
+  void *p = kalloc();
+  if (p) {
+    kprint("[ " ANSI_GREEN "OK" ANSI_RESET " ] PMM Test: Alloc at ");
+    kprint_hex((uint64_t)p);
+    kprint("\n");
+    kfree(p);
+  } else {
+    kprint("[ " ANSI_RED "FAIL" ANSI_RESET " ] PMM Alloc failed!\n");
+  }
+
   kprint("[ " ANSI_GREEN "OK" ANSI_RESET " ] Mounting Virtual Disk...\n");
   kprint("[ " ANSI_GREEN "OK" ANSI_RESET " ] System Ready.\n\n");
 }
@@ -53,7 +70,14 @@ void kmain() {
 
     if (kstrcmp(cmd, "exit") == 0) {
       kprint("[" ANSI_GREEN " OK " ANSI_RESET "] System halting.\n");
-      asm volatile("li a7, 93\n li a0, 0\n ecall");
+      // We add NOPs here to flush the pipeline.
+      asm volatile("li a7, 93\n"
+                   "li a0, 0\n"
+                   "nop\n"
+                   "nop\n"
+                   "nop\n"
+                   "nop\n"
+                   "ecall");
       while (1)
         ;
     }

@@ -4,7 +4,8 @@ import os
 import sys
 
 # Configuration
-KERNEL_SIZE = 16384
+# Increased to 64KB to prevent truncation with -O0 builds
+KERNEL_SIZE = 65536
 OUTPUT_IMG = "disk.img"
 BIN_DIR = "bin"
 KERNEL_BIN = "build/kernel.bin"

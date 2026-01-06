@@ -65,25 +65,29 @@ impl Bus {
     pub fn write_u8(&mut self, paddr: u64, v: u8) {
         if Self::is_uart(paddr) {
             self.uart.write_u8(paddr, v);
-        } else if self.disk.is_in_range(paddr) { /* ignore writes to disk regs */
+        } else if self.disk.is_in_range(paddr) {
+            self.disk.write_u8(paddr, v);
         } else {
             self.mem.write_u8(paddr, v);
         }
     }
     pub fn write_u16(&mut self, paddr: u64, v: u16) {
-        if self.disk.is_in_range(paddr) { /* ignore */
+        if self.disk.is_in_range(paddr) {
+            self.disk.write_u16(paddr, v);
         } else {
             self.mem.write_u16(paddr, v);
         }
     }
     pub fn write_u32(&mut self, paddr: u64, v: u32) {
-        if self.disk.is_in_range(paddr) { /* ignore */
+        if self.disk.is_in_range(paddr) {
+            self.disk.write_u32(paddr, v);
         } else {
             self.mem.write_u32(paddr, v);
         }
     }
     pub fn write_u64(&mut self, paddr: u64, v: u64) {
-        if self.disk.is_in_range(paddr) { /* ignore */
+        if self.disk.is_in_range(paddr) {
+            self.disk.write_u64(paddr, v);
         } else {
             self.mem.write_u64(paddr, v);
         }
