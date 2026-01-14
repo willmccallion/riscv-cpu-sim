@@ -4,20 +4,25 @@ pub mod memory;
 
 pub use self::bus::Bus;
 
-use self::devices::{Clint, Uart, VirtualDisk};
+use self::devices::{Clint, SysCon, Uart, VirtualDisk};
 use self::memory::Memory;
 use self::memory::controller::{DramController, MemoryController, SimpleController};
 use crate::config::Config;
 use crate::sim::loader::load_binary;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct System {
     pub bus: Bus,
     pub mem_controller: Box<dyn MemoryController>,
+    pub exit_request: Arc<AtomicU64>,
 }
 
 impl System {
     pub fn new(config: &Config, disk_path: &str) -> Self {
         let mut bus = Bus::new(config.system.bus_width, config.system.bus_latency);
+
+        let exit_request = Arc::new(AtomicU64::new(u64::MAX));
 
         let ram_base = config.system.ram_base_val();
         let ram_size = config.memory.ram_size_val();
@@ -38,10 +43,14 @@ impl System {
             }
         }
 
+        let syscon_addr = config.system.syscon_base_val();
+        let syscon = SysCon::new(syscon_addr, exit_request.clone());
+
         bus.add_device(Box::new(mem));
         bus.add_device(Box::new(uart));
         bus.add_device(Box::new(disk));
         bus.add_device(Box::new(clint));
+        bus.add_device(Box::new(syscon));
 
         let mem_controller: Box<dyn MemoryController> = match config.memory.controller.as_str() {
             "DRAM" => Box::new(DramController::new(
@@ -55,6 +64,7 @@ impl System {
         Self {
             bus,
             mem_controller,
+            exit_request,
         }
     }
 
@@ -64,5 +74,10 @@ impl System {
 
     pub fn tick(&mut self) -> bool {
         self.bus.tick()
+    }
+
+    pub fn check_exit(&self) -> Option<u64> {
+        let val = self.exit_request.load(Ordering::Relaxed);
+        if val != u64::MAX { Some(val) } else { None }
     }
 }

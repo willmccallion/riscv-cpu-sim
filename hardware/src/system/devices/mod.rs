@@ -1,8 +1,10 @@
 pub mod clint;
+pub mod syscon;
 pub mod uart;
 pub mod virtio_disk;
 
 pub use clint::Clint;
+pub use syscon::SysCon;
 pub use uart::Uart;
 pub use virtio_disk::VirtualDisk;
 

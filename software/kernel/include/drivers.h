@@ -6,6 +6,7 @@
 #define UART_BASE 0x10000000
 #define DISK_BASE 0x90000000
 #define CLINT_BASE 0x02000000
+#define SYSCON_BASE 0x100000
 
 // Register Offsets
 #define CLINT_MSIP (CLINT_BASE + 0x0000)

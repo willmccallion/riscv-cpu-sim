@@ -1,4 +1,4 @@
-use super::pipeline::{ExMem, IdEx, MemWb};
+use super::pipeline::{ExMem, IdEx, IdExEntry, IfId, MemWb};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum AluOp {
@@ -129,26 +129,34 @@ pub struct ControlSignals {
     pub atomic_op: AtomicOp,
 }
 
-pub fn need_stall_load_use(id_ex: &IdEx, if_id_inst: u32) -> bool {
-    if !id_ex.ctrl.mem_read {
-        return false;
+pub fn need_stall_load_use(id_ex: &IdEx, if_id: &IfId) -> bool {
+    for ex_inst in &id_ex.entries {
+        if !ex_inst.ctrl.mem_read {
+            continue;
+        }
+
+        if !ex_inst.ctrl.fp_reg_write && ex_inst.rd == 0 {
+            continue;
+        }
+
+        for id_inst in &if_id.entries {
+            let inst = id_inst.inst;
+            let next_rs1 = ((inst >> 15) & 0x1f) as usize;
+            let next_rs2 = ((inst >> 20) & 0x1f) as usize;
+            let next_rs3 = ((inst >> 27) & 0x1f) as usize;
+
+            if ex_inst.rd == next_rs1 || ex_inst.rd == next_rs2 || ex_inst.rd == next_rs3 {
+                return true;
+            }
+        }
     }
-
-    if !id_ex.ctrl.fp_reg_write && id_ex.rd == 0 {
-        return false;
-    }
-
-    let next_rs1 = ((if_id_inst >> 15) & 0x1f) as usize;
-    let next_rs2 = ((if_id_inst >> 20) & 0x1f) as usize;
-    let next_rs3 = ((if_id_inst >> 27) & 0x1f) as usize;
-
-    id_ex.rd == next_rs1 || id_ex.rd == next_rs2 || id_ex.rd == next_rs3
+    false
 }
 
-pub fn forward_rs(id_ex: &IdEx, ex_mem: &ExMem, mem_wb: &MemWb) -> (u64, u64, u64) {
-    let mut a = id_ex.rv1;
-    let mut b = id_ex.rv2;
-    let mut c = id_ex.rv3;
+pub fn forward_rs(id_entry: &IdExEntry, ex_mem: &ExMem, mem_wb: &MemWb) -> (u64, u64, u64) {
+    let mut a = id_entry.rv1;
+    let mut b = id_entry.rv2;
+    let mut c = id_entry.rv3;
 
     let check = |dest: usize, dest_fp: bool, src: usize, src_fp: bool| -> bool {
         if dest_fp != src_fp {
@@ -163,45 +171,49 @@ pub fn forward_rs(id_ex: &IdEx, ex_mem: &ExMem, mem_wb: &MemWb) -> (u64, u64, u6
         true
     };
 
-    if mem_wb.ctrl.reg_write || mem_wb.ctrl.fp_reg_write {
-        let wb_val = if mem_wb.ctrl.mem_read {
-            mem_wb.load_data
-        } else if mem_wb.ctrl.jump {
-            mem_wb.pc.wrapping_add(4)
-        } else {
-            mem_wb.alu
-        };
+    for wb_entry in mem_wb.entries.iter() {
+        if wb_entry.ctrl.reg_write || wb_entry.ctrl.fp_reg_write {
+            let wb_val = if wb_entry.ctrl.mem_read {
+                wb_entry.load_data
+            } else if wb_entry.ctrl.jump {
+                wb_entry.pc.wrapping_add(4)
+            } else {
+                wb_entry.alu
+            };
 
-        let dest_fp = mem_wb.ctrl.fp_reg_write;
+            let dest_fp = wb_entry.ctrl.fp_reg_write;
 
-        if check(mem_wb.rd, dest_fp, id_ex.rs1, id_ex.ctrl.rs1_fp) {
-            a = wb_val;
-        }
-        if check(mem_wb.rd, dest_fp, id_ex.rs2, id_ex.ctrl.rs2_fp) {
-            b = wb_val;
-        }
-        if check(mem_wb.rd, dest_fp, id_ex.rs3, id_ex.ctrl.rs3_fp) {
-            c = wb_val;
+            if check(wb_entry.rd, dest_fp, id_entry.rs1, id_entry.ctrl.rs1_fp) {
+                a = wb_val;
+            }
+            if check(wb_entry.rd, dest_fp, id_entry.rs2, id_entry.ctrl.rs2_fp) {
+                b = wb_val;
+            }
+            if check(wb_entry.rd, dest_fp, id_entry.rs3, id_entry.ctrl.rs3_fp) {
+                c = wb_val;
+            }
         }
     }
 
-    if (ex_mem.ctrl.reg_write || ex_mem.ctrl.fp_reg_write) && !ex_mem.ctrl.mem_read {
-        let ex_val = if ex_mem.ctrl.jump {
-            ex_mem.pc.wrapping_add(4)
-        } else {
-            ex_mem.alu
-        };
+    for mem_entry in ex_mem.entries.iter() {
+        if (mem_entry.ctrl.reg_write || mem_entry.ctrl.fp_reg_write) && !mem_entry.ctrl.mem_read {
+            let ex_val = if mem_entry.ctrl.jump {
+                mem_entry.pc.wrapping_add(4)
+            } else {
+                mem_entry.alu
+            };
 
-        let dest_fp = ex_mem.ctrl.fp_reg_write;
+            let dest_fp = mem_entry.ctrl.fp_reg_write;
 
-        if check(ex_mem.rd, dest_fp, id_ex.rs1, id_ex.ctrl.rs1_fp) {
-            a = ex_val;
-        }
-        if check(ex_mem.rd, dest_fp, id_ex.rs2, id_ex.ctrl.rs2_fp) {
-            b = ex_val;
-        }
-        if check(ex_mem.rd, dest_fp, id_ex.rs3, id_ex.ctrl.rs3_fp) {
-            c = ex_val;
+            if check(mem_entry.rd, dest_fp, id_entry.rs1, id_entry.ctrl.rs1_fp) {
+                a = ex_val;
+            }
+            if check(mem_entry.rd, dest_fp, id_entry.rs2, id_entry.ctrl.rs2_fp) {
+                b = ex_val;
+            }
+            if check(mem_entry.rd, dest_fp, id_entry.rs3, id_entry.ctrl.rs3_fp) {
+                c = ex_val;
+            }
         }
     }
 

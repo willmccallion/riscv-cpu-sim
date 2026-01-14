@@ -51,6 +51,7 @@ enabled = false
 
 [pipeline]
 branch_predictor = "Perceptron"
+width = 2
 btb_size = 1024
 ras_size = 16
 

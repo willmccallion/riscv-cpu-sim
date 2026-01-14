@@ -85,15 +85,14 @@ void kmain() {
 
     if (kstrcmp(cmd, "exit") == 0) {
       kprint("[" ANSI_GREEN " OK " ANSI_RESET "] System halting.\n");
-      asm volatile("li a7, 93\n"
-                   "li a0, 0\n"
-                   "nop\n"
-                   "nop\n"
-                   "nop\n"
-                   "nop\n"
-                   "ecall");
-      while (1)
-        ;
+
+      // Write 0x5555 to SYSCON to tell the simulator to exit with code 0
+      *(volatile uint32_t *)SYSCON_BASE = 0x5555;
+
+      // Loop forever while waiting for the simulator to kill us
+      while (1) {
+        asm volatile("wfi");
+      }
     }
 
     // Try to find file in FS

@@ -63,6 +63,7 @@ pub struct Cpu {
     pub mmu: Mmu,
 
     pub load_reservation: Option<u64>,
+    pub pipeline_width: usize,
 }
 
 impl Cpu {
@@ -143,10 +144,16 @@ impl Cpu {
             alu_timer: 0,
             mmu: Mmu::new(config.memory.tlb_size),
             load_reservation: None,
+            pipeline_width: config.pipeline.width,
         }
     }
 
     pub fn tick(&mut self) -> Result<(), String> {
+        if let Some(code) = self.bus.check_exit() {
+            self.exit_code = Some(code);
+            return Ok(());
+        }
+
         // Timer & Interrupt Handling
         let timer_irq = self.bus.tick();
 
@@ -250,7 +257,7 @@ impl Cpu {
         stages::execute::execute_stage(self)?;
 
         // Hazard Detection (Load-Use)
-        let is_load_use_hazard = control::need_stall_load_use(&self.id_ex, self.if_id.inst);
+        let is_load_use_hazard = control::need_stall_load_use(&self.id_ex, &self.if_id);
 
         if is_load_use_hazard {
             // Stall: Inject Bubble into ID/EX, do not fetch new instruction
@@ -259,7 +266,11 @@ impl Cpu {
         } else {
             // Normal operation: Decode & Fetch
             stages::decode::decode_stage(self)?;
-            stages::fetch::fetch_stage(self)?;
+
+            // Only fetch if IF/ID is empty (simplified in-order logic)
+            if self.if_id.entries.is_empty() {
+                stages::fetch::fetch_stage(self)?;
+            }
         }
 
         // Hardwire zero register
@@ -396,14 +407,20 @@ impl Cpu {
                     if reg == abi::REG_ZERO {
                         return 0;
                     }
-                    if cpu.ex_mem.ctrl.reg_write && cpu.ex_mem.rd == reg {
-                        return cpu.ex_mem.alu;
+                    // Check EX/MEM bundle
+                    for ex in cpu.ex_mem.entries.iter().rev() {
+                        if ex.ctrl.reg_write && ex.rd == reg {
+                            return ex.alu;
+                        }
                     }
-                    if cpu.mem_wb.ctrl.reg_write && cpu.mem_wb.rd == reg {
-                        if cpu.mem_wb.ctrl.mem_read {
-                            return cpu.mem_wb.load_data;
-                        } else {
-                            return cpu.mem_wb.alu;
+                    // Check MEM/WB bundle
+                    for wb in cpu.mem_wb.entries.iter().rev() {
+                        if wb.ctrl.reg_write && wb.rd == reg {
+                            if wb.ctrl.mem_read {
+                                return wb.load_data;
+                            } else {
+                                return wb.alu;
+                            }
                         }
                     }
                     cpu.regs.read(reg)
@@ -470,20 +487,13 @@ impl Cpu {
     }
 
     pub fn print_pipeline_diagram(&self) {
-        let fmt = |pc, inst, _lbl| {
-            if inst == 0x13 || inst == 0 {
-                format!("[{:^8}]", "nop")
-            } else {
-                format!("[{:08x}]", pc)
-            }
-        };
         eprintln!(
-            "{} -> {} -> {} -> {} -> {}",
-            fmt(self.if_id.pc, self.if_id.inst, "IF"),
-            fmt(self.id_ex.pc, self.id_ex.inst, "ID"),
-            fmt(self.ex_mem.pc, self.ex_mem.inst, "EX"),
-            fmt(self.mem_wb.pc, self.mem_wb.inst, "MEM"),
-            fmt(self.wb_latch.pc, self.wb_latch.inst, "WB")
+            "IF:{} -> ID:{} -> EX:{} -> MEM:{} -> WB:{}",
+            self.if_id.entries.len(),
+            self.id_ex.entries.len(),
+            self.ex_mem.entries.len(),
+            self.mem_wb.entries.len(),
+            self.wb_latch.entries.len()
         );
     }
 

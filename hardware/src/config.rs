@@ -63,6 +63,9 @@ pub struct SystemConfig {
 
     #[serde(default = "default_clint_div")]
     pub clint_divider: u64,
+
+    #[serde(default = "default_syscon_base")]
+    pub syscon_base: String,
 }
 
 impl SystemConfig {
@@ -80,6 +83,10 @@ impl SystemConfig {
 
     pub fn clint_base_val(&self) -> u64 {
         parse_hex(&self.clint_base, CLINT_BASE)
+    }
+
+    pub fn syscon_base_val(&self) -> u64 {
+        parse_hex(&self.syscon_base, 0x100000)
     }
 }
 
@@ -161,6 +168,10 @@ fn default_bus_latency() -> u64 {
 
 fn default_clint_div() -> u64 {
     CLINT_DIV
+}
+
+fn default_syscon_base() -> String {
+    format!("{:#x}", 0x100000)
 }
 
 fn default_controller() -> String {
@@ -258,6 +269,9 @@ fn d_c_pref_d() -> usize {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct PipelineConfig {
+    #[serde(default = "default_width")]
+    pub width: usize,
+
     pub branch_predictor: String,
     pub btb_size: usize,
     pub ras_size: usize,
@@ -271,6 +285,10 @@ pub struct PipelineConfig {
 
     #[serde(default)]
     pub tournament: TournamentConfig,
+}
+
+fn default_width() -> usize {
+    1
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

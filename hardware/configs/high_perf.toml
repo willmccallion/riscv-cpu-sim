@@ -59,6 +59,7 @@ prefetch_degree = 0
 
 [pipeline]
 branch_predictor = "TAGE"
+width = 4
 btb_size = 4096
 ras_size = 48
 

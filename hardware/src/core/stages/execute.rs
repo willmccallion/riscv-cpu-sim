@@ -1,6 +1,6 @@
 use crate::core::Cpu;
 use crate::core::control::{AluOp, CsrOp, OpASrc, OpBSrc};
-use crate::core::pipeline::{ExMem, IdEx};
+use crate::core::pipeline::{ExMem, ExMemEntry, IfId};
 use crate::core::types::Trap;
 use crate::isa::{abi, funct3, opcodes, sys_ops};
 
@@ -174,8 +174,9 @@ fn alu(op: AluOp, a: u64, b: u64, c: u64, is32: bool) -> u64 {
                     AluOp::FLe => (fa <= fb) as u64,
                     AluOp::FCvtWS => (fa as i32) as i64 as u64,
                     AluOp::FCvtLS => (fa as i64) as u64,
-                    AluOp::FCvtSW => box_f32((a as i32) as f32),
-                    AluOp::FCvtSL => box_f32((a as i64) as f32),
+                    AluOp::FCvtSD => box_f32(fa as f32),
+                    AluOp::FCvtSW => ((a as i32) as f64).to_bits(),
+                    AluOp::FCvtSL => ((a as i64) as f64).to_bits(),
                     AluOp::FCvtDS => (f32::from_bits(a as u32) as f64).to_bits(),
                     AluOp::FMvToF => box_f32(f32::from_bits(a as u32)),
                     AluOp::FMvToX => (a as i32) as u64,
@@ -229,239 +230,306 @@ fn alu(op: AluOp, a: u64, b: u64, c: u64, is32: bool) -> u64 {
 }
 
 pub fn execute_stage(cpu: &mut Cpu) -> Result<(), String> {
-    let id = cpu.id_ex.clone();
-    if let Some(trap) = id.trap {
-        cpu.ex_mem = ExMem {
-            pc: id.pc,
-            inst: id.inst,
-            rd: id.rd,
-            alu: 0,
-            store_data: 0,
-            ctrl: id.ctrl,
-            trap: Some(trap),
-        };
-        return Ok(());
-    }
+    let mut ex_results = Vec::new();
+    let mut flush_remaining = false;
 
-    if cpu.trace {
-        eprintln!("EX  pc={:#x}", id.pc);
-    }
+    let entries = cpu.id_ex.entries.clone();
 
-    let (fwd_a, fwd_b, fwd_c) =
-        crate::core::control::forward_rs(&cpu.id_ex, &cpu.ex_mem, &cpu.wb_latch);
-    let store_data = fwd_b;
-
-    let op_a = match id.ctrl.a_src {
-        OpASrc::Reg1 => fwd_a,
-        OpASrc::Pc => id.pc,
-        OpASrc::Zero => 0,
-    };
-    let op_b = match id.ctrl.b_src {
-        OpBSrc::Reg2 => fwd_b,
-        OpBSrc::Imm => id.imm as u64,
-        OpBSrc::Zero => 0,
-    };
-    let op_c = fwd_c;
-
-    if id.ctrl.is_system {
-        if id.ctrl.is_mret {
-            cpu.do_mret();
-            cpu.id_ex = IdEx::bubble();
-            return Ok(());
-        }
-        if id.ctrl.is_sret {
-            cpu.do_sret();
-            cpu.id_ex = IdEx::bubble();
-            return Ok(());
+    for id in entries {
+        if flush_remaining {
+            break;
         }
 
-        if id.inst == sys_ops::SFENCE_VMA {
-            if cpu.trace {
-                eprintln!("EX  SFENCE.VMA - Flushing TLBs");
-            }
-            cpu.mmu.dtlb.flush();
-            cpu.mmu.itlb.flush();
-            return Ok(());
-        }
-
-        if id.inst == sys_ops::ECALL {
-            let val_a7 = cpu.regs.read(abi::REG_A7);
-            let val_a0 = cpu.regs.read(abi::REG_A0);
-
-            if val_a7 == sys_ops::SYS_EXIT {
-                cpu.exit_code = Some(val_a0);
-                return Ok(());
-            } else if val_a0 == sys_ops::SYS_EXIT {
-                let val_a1 = cpu.regs.read(abi::REG_A1);
-                cpu.exit_code = Some(val_a1);
-                return Ok(());
-            }
-
-            let trap = match cpu.privilege {
-                0 => Trap::EnvironmentCallFromUMode,
-                1 => Trap::EnvironmentCallFromSMode,
-                3 => Trap::EnvironmentCallFromMMode,
-                _ => Trap::EnvironmentCallFromMMode,
-            };
-
-            cpu.trap(trap, id.pc);
-            cpu.id_ex = IdEx::bubble();
-            return Ok(());
-        }
-
-        if id.ctrl.csr_op != CsrOp::None {
-            let old = cpu.csr_read(id.ctrl.csr_addr);
-            let src = match id.ctrl.csr_op {
-                CsrOp::Rwi | CsrOp::Rsi | CsrOp::Rci => (id.rs1 as u64) & 0x1f,
-                _ => fwd_a,
-            };
-            let new = match id.ctrl.csr_op {
-                CsrOp::Rw | CsrOp::Rwi => src,
-                CsrOp::Rs | CsrOp::Rsi => old | src,
-                CsrOp::Rc | CsrOp::Rci => old & !src,
-                CsrOp::None => old,
-            };
-            cpu.csr_write(id.ctrl.csr_addr, new);
-
-            cpu.if_id = Default::default();
-            cpu.id_ex = IdEx::bubble();
-            cpu.pc = id.pc.wrapping_add(4);
-
-            cpu.ex_mem = ExMem {
+        if let Some(trap) = id.trap.clone() {
+            ex_results.push(ExMemEntry {
                 pc: id.pc,
                 inst: id.inst,
                 rd: id.rd,
-                alu: old,
-                store_data,
+                alu: 0,
+                store_data: 0,
                 ctrl: id.ctrl,
-                trap: None,
+                trap: Some(trap),
+            });
+            continue;
+        }
+
+        if cpu.trace {
+            eprintln!("EX  pc={:#x}", id.pc);
+        }
+
+        let (fwd_a, fwd_b, fwd_c) =
+            crate::core::control::forward_rs(&id, &cpu.ex_mem, &cpu.wb_latch);
+        let store_data = fwd_b;
+
+        let op_a = match id.ctrl.a_src {
+            OpASrc::Reg1 => fwd_a,
+            OpASrc::Pc => id.pc,
+            OpASrc::Zero => 0,
+        };
+        let op_b = match id.ctrl.b_src {
+            OpBSrc::Reg2 => fwd_b,
+            OpBSrc::Imm => id.imm as u64,
+            OpBSrc::Zero => 0,
+        };
+        let op_c = fwd_c;
+
+        if id.ctrl.is_system {
+            if id.ctrl.is_mret {
+                cpu.do_mret();
+                flush_remaining = true;
+                cpu.if_id = IfId::default();
+                continue;
+            }
+            if id.ctrl.is_sret {
+                cpu.do_sret();
+                flush_remaining = true;
+                cpu.if_id = IfId::default();
+                continue;
+            }
+
+            if id.inst == sys_ops::SFENCE_VMA {
+                if cpu.trace {
+                    eprintln!("EX  SFENCE.VMA - Flushing TLBs");
+                }
+                cpu.mmu.dtlb.flush();
+                cpu.mmu.itlb.flush();
+                ex_results.push(ExMemEntry {
+                    pc: id.pc,
+                    inst: id.inst,
+                    rd: id.rd,
+                    alu: 0,
+                    store_data,
+                    ctrl: id.ctrl,
+                    trap: None,
+                });
+                continue;
+            }
+
+            if id.inst == sys_ops::ECALL {
+                // Helper to resolve register values including current bundle
+                let get_val = |reg: usize, cpu: &Cpu, current_results: &[ExMemEntry]| -> u64 {
+                    if reg == 0 {
+                        return 0;
+                    }
+                    for entry in current_results.iter().rev() {
+                        if entry.ctrl.reg_write && entry.rd == reg {
+                            return entry.alu;
+                        }
+                    }
+
+                    for entry in cpu.ex_mem.entries.iter().rev() {
+                        if entry.ctrl.reg_write && entry.rd == reg {
+                            return if entry.ctrl.jump {
+                                entry.pc.wrapping_add(4)
+                            } else {
+                                entry.alu
+                            };
+                        }
+                    }
+
+                    for entry in cpu.mem_wb.entries.iter().rev() {
+                        if entry.ctrl.reg_write && entry.rd == reg {
+                            return if entry.ctrl.mem_read {
+                                entry.load_data
+                            } else if entry.ctrl.jump {
+                                entry.pc.wrapping_add(4)
+                            } else {
+                                entry.alu
+                            };
+                        }
+                    }
+                    cpu.regs.read(reg)
+                };
+
+                // Only intercept SYS_EXIT if we are in Direct Mode (no kernel).
+                if cpu.direct_mode {
+                    let val_a7 = get_val(abi::REG_A7, cpu, &ex_results);
+                    let val_a0 = get_val(abi::REG_A0, cpu, &ex_results);
+
+                    if val_a7 == sys_ops::SYS_EXIT {
+                        cpu.exit_code = Some(val_a0);
+                        return Ok(());
+                    } else if val_a0 == sys_ops::SYS_EXIT {
+                        // Handle legacy/alternative convention if needed
+                        let val_a1 = get_val(abi::REG_A1, cpu, &ex_results);
+                        cpu.exit_code = Some(val_a1);
+                        return Ok(());
+                    }
+                }
+
+                let trap = match cpu.privilege {
+                    0 => Trap::EnvironmentCallFromUMode,
+                    1 => Trap::EnvironmentCallFromSMode,
+                    3 => Trap::EnvironmentCallFromMMode,
+                    _ => Trap::EnvironmentCallFromMMode,
+                };
+
+                cpu.trap(trap, id.pc);
+                flush_remaining = true;
+                continue;
+            }
+
+            if id.ctrl.csr_op != CsrOp::None {
+                let old = cpu.csr_read(id.ctrl.csr_addr);
+                let src = match id.ctrl.csr_op {
+                    CsrOp::Rwi | CsrOp::Rsi | CsrOp::Rci => (id.rs1 as u64) & 0x1f,
+                    _ => fwd_a,
+                };
+                let new = match id.ctrl.csr_op {
+                    CsrOp::Rw | CsrOp::Rwi => src,
+                    CsrOp::Rs | CsrOp::Rsi => old | src,
+                    CsrOp::Rc | CsrOp::Rci => old & !src,
+                    CsrOp::None => old,
+                };
+                cpu.csr_write(id.ctrl.csr_addr, new);
+
+                cpu.if_id = IfId::default();
+                cpu.pc = id.pc.wrapping_add(4);
+                flush_remaining = true;
+
+                ex_results.push(ExMemEntry {
+                    pc: id.pc,
+                    inst: id.inst,
+                    rd: id.rd,
+                    alu: old,
+                    store_data,
+                    ctrl: id.ctrl,
+                    trap: None,
+                });
+                continue;
+            }
+        }
+
+        let alu_out = if (id.ctrl.alu as i32 >= AluOp::FCvtSW as i32
+            && id.ctrl.alu as i32 <= AluOp::FCvtSL as i32)
+            || id.ctrl.alu as i32 == AluOp::FMvToF as i32
+        {
+            match id.ctrl.alu {
+                AluOp::FCvtSW => {
+                    if id.ctrl.is_rv32 {
+                        box_f32((op_a as i32) as f32)
+                    } else {
+                        ((op_a as i32) as f64).to_bits()
+                    }
+                }
+                AluOp::FCvtSL => {
+                    if id.ctrl.is_rv32 {
+                        box_f32((op_a as i64) as f32)
+                    } else {
+                        ((op_a as i64) as f64).to_bits()
+                    }
+                }
+                AluOp::FCvtSD => {
+                    let val_d = f64::from_bits(op_a);
+                    let val_s = val_d as f32;
+                    box_f32(val_s)
+                }
+                AluOp::FCvtDS => {
+                    let val_s = f32::from_bits(op_a as u32);
+                    let val_d = val_s as f64;
+                    val_d.to_bits()
+                }
+                AluOp::FMvToF => {
+                    if id.ctrl.is_rv32 {
+                        box_f32(f32::from_bits(op_a as u32))
+                    } else {
+                        op_a
+                    }
+                }
+                _ => 0,
+            }
+        } else {
+            alu(id.ctrl.alu, op_a, op_b, op_c, id.ctrl.is_rv32)
+        };
+
+        if id.ctrl.branch {
+            let taken = match (id.inst >> 12) & 0x7 {
+                funct3::BEQ => op_a == op_b,
+                funct3::BNE => op_a != op_b,
+                funct3::BLT => (op_a as i64) < (op_b as i64),
+                funct3::BGE => (op_a as i64) >= (op_b as i64),
+                funct3::BLTU => op_a < op_b,
+                funct3::BGEU => op_a >= op_b,
+                _ => false,
             };
-            return Ok(());
-        }
-    }
+            let actual_target = id.pc.wrapping_add(id.imm as u64);
+            let fallthrough = id.pc.wrapping_add(4);
 
-    let alu_out = if (id.ctrl.alu as i32 >= AluOp::FCvtSW as i32
-        && id.ctrl.alu as i32 <= AluOp::FCvtSL as i32)
-        || id.ctrl.alu as i32 == AluOp::FMvToF as i32
-    {
-        match id.ctrl.alu {
-            AluOp::FCvtSW => {
-                if id.ctrl.is_rv32 {
-                    box_f32((op_a as i32) as f32)
-                } else {
-                    ((op_a as i32) as f64).to_bits()
-                }
-            }
-            AluOp::FCvtSL => {
-                if id.ctrl.is_rv32 {
-                    box_f32((op_a as i64) as f32)
-                } else {
-                    ((op_a as i64) as f64).to_bits()
-                }
-            }
-            AluOp::FCvtSD => {
-                let val_d = f64::from_bits(op_a);
-                let val_s = val_d as f32;
-                box_f32(val_s)
-            }
-            AluOp::FCvtDS => {
-                let val_s = f32::from_bits(op_a as u32);
-                let val_d = val_s as f64;
-                val_d.to_bits()
-            }
-            AluOp::FMvToF => {
-                if id.ctrl.is_rv32 {
-                    box_f32(f32::from_bits(op_a as u32))
-                } else {
-                    op_a
-                }
-            }
-            _ => 0,
-        }
-    } else {
-        alu(id.ctrl.alu, op_a, op_b, op_c, id.ctrl.is_rv32)
-    };
+            let predicted_target = if id.pred_taken {
+                id.pred_target
+            } else {
+                fallthrough
+            };
+            let actual_next_pc = if taken { actual_target } else { fallthrough };
 
-    if id.ctrl.branch {
-        let taken = match (id.inst >> 12) & 0x7 {
-            funct3::BEQ => op_a == op_b,
-            funct3::BNE => op_a != op_b,
-            funct3::BLT => (op_a as i64) < (op_b as i64),
-            funct3::BGE => (op_a as i64) >= (op_b as i64),
-            funct3::BLTU => op_a < op_b,
-            funct3::BGEU => op_a >= op_b,
-            _ => false,
-        };
-        let actual = id.pc.wrapping_add(id.imm as u64);
-        let fallthrough = id.pc.wrapping_add(4);
-        let next_inst_pc = cpu.if_id.pc;
+            let mispredicted = predicted_target != actual_next_pc;
 
-        let mut mispred = false;
-        let mut redirect = cpu.pc;
+            cpu.branch_predictor.update_branch(
+                id.pc,
+                taken,
+                if taken { Some(actual_target) } else { None },
+            );
 
-        if taken {
-            if next_inst_pc != actual {
-                mispred = true;
-                redirect = actual;
+            if mispredicted {
+                cpu.stats.branch_mispredictions += 1;
+                cpu.stats.stalls_control += 2;
+
+                cpu.pc = actual_next_pc;
+                cpu.if_id = IfId::default();
+                flush_remaining = true;
+            } else {
+                cpu.stats.branch_predictions += 1;
             }
-        } else if next_inst_pc != fallthrough {
-            mispred = true;
-            redirect = fallthrough;
         }
 
-        cpu.branch_predictor
-            .update_branch(id.pc, taken, if taken { Some(actual) } else { None });
+        if id.ctrl.jump {
+            let is_jalr = (id.inst & 0x7f) == opcodes::OP_JALR;
+            let is_call = (id.inst & 0x7f) == opcodes::OP_JAL && id.rd == abi::REG_RA;
+            let is_ret = is_jalr && id.rd == abi::REG_ZERO && id.rs1 == abi::REG_RA;
 
-        if mispred {
-            cpu.stats.branch_mispredictions += 1;
-            cpu.stats.stalls_control += 2;
-            cpu.pc = redirect;
-            cpu.if_id = Default::default();
-            cpu.id_ex = IdEx::bubble();
-        } else {
-            cpu.stats.branch_predictions += 1;
-        }
-    }
+            let actual_target = if is_jalr {
+                (fwd_a.wrapping_add(id.imm as u64)) & !1
+            } else {
+                id.pc.wrapping_add(id.imm as u64)
+            };
 
-    if id.ctrl.jump {
-        let is_jalr = (id.inst & 0x7f) == opcodes::OP_JALR;
-        let is_call = (id.inst & 0x7f) == opcodes::OP_JAL && id.rd == abi::REG_RA;
-        let is_ret = is_jalr && id.rd == abi::REG_ZERO && id.rs1 == abi::REG_RA;
+            let predicted_target = if id.pred_taken {
+                id.pred_target
+            } else {
+                id.pc.wrapping_add(4)
+            };
 
-        let actual = if is_jalr {
-            (fwd_a.wrapping_add(id.imm as u64)) & !1
-        } else {
-            id.pc.wrapping_add(id.imm as u64)
-        };
+            if actual_target != predicted_target {
+                cpu.stats.branch_mispredictions += 1;
+                cpu.stats.stalls_control += 2;
+                cpu.pc = actual_target;
+                cpu.if_id = IfId::default();
+                flush_remaining = true;
+            } else {
+                cpu.stats.branch_predictions += 1;
+            }
 
-        let next_inst_pc = cpu.if_id.pc;
-
-        if next_inst_pc != actual {
-            cpu.stats.branch_mispredictions += 1;
-            cpu.stats.stalls_control += 2;
-            cpu.pc = actual;
-            cpu.if_id = Default::default();
-            cpu.id_ex = IdEx::bubble();
-        } else {
-            cpu.stats.branch_predictions += 1;
+            if is_call {
+                cpu.branch_predictor
+                    .on_call(id.pc, id.pc.wrapping_add(4), actual_target);
+            } else if is_ret {
+                cpu.branch_predictor.on_return();
+            }
         }
 
-        if is_call {
-            cpu.branch_predictor
-                .on_call(id.pc, id.pc.wrapping_add(4), actual);
-        } else if is_ret {
-            cpu.branch_predictor.on_return();
-        }
+        ex_results.push(ExMemEntry {
+            pc: id.pc,
+            inst: id.inst,
+            rd: id.rd,
+            alu: alu_out,
+            store_data,
+            ctrl: id.ctrl,
+            trap: None,
+        });
     }
 
     cpu.ex_mem = ExMem {
-        pc: id.pc,
-        inst: id.inst,
-        rd: id.rd,
-        alu: alu_out,
-        store_data,
-        ctrl: id.ctrl,
-        trap: None,
+        entries: ex_results,
     };
     Ok(())
 }
