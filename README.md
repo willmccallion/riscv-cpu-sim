@@ -1,25 +1,25 @@
 # RISC-V 64-bit System Simulator
 
-This project is a cycle-accurate system simulator for the RISC-V 64-bit architecture (RV64IMAFD). It implements a 5-stage pipelined CPU, a comprehensive memory hierarchy, and a custom microkernel to demonstrate end-to-end execution of user-space applications.
+This project is a cycle-accurate system simulator for the RISC-V 64-bit architecture (RV64IMAFD). It implements a **configurable superscalar** 5-stage pipelined CPU, a comprehensive memory hierarchy, and a custom microkernel to demonstrate end-to-end execution of user-space applications.
 
 ## Technologies Used
 
 * **Languages:** Rust (Simulator), C (Kernel/Userland), RISC-V Assembly, Python (Analysis)
-* **Concepts:** Pipelining, Virtual Memory (SV39), Cache Coherence, Branch Prediction, OS Development
+* **Concepts:** Superscalar Execution, Pipelining, Virtual Memory (SV39), Cache Coherence, Branch Prediction, OS Development
 * **Tools:** Make, GCC Cross-Compiler, Cargo
 
 ## Key Implementation Details
 
 ### CPU Core (Rust)
 
-* **5-Stage Pipeline:** Implements Fetch, Decode, Execute, Memory, and Writeback stages with full data forwarding and hazard detection.
-* **Branch Prediction:** Features multiple swappable predictors including Static, GShare, Tournament, Perceptron, and TAGE (Tagged Geometric History).
+* **Superscalar Pipeline:** Configurable issue width (N-wide) pipeline implementing Fetch, Decode, Execute, Memory, and Writeback stages. Features full data forwarding, hazard detection, and parallel instruction execution.
+* **Branch Prediction:** Features multiple swappable predictors including Static, GShare, Tournament, Perceptron, and TAGE (Tagged Geometric History) to minimize control stalls in wide-issue configurations.
 * **Floating Point:** Support for single and double-precision floating-point arithmetic (F/D extensions).
 
 ### Memory System
 
 * **Memory Management Unit (MMU):** Implements SV39 virtual addressing with translation lookaside buffers (iTLB and dTLB).
-* **Cache Hierarchy:** Configurable L1, L2, and L3 caches supporting LRU, PLRU, and Random replacement policies.
+* **Cache Hierarchy:** Configurable L1, L2, and L3 caches supporting LRU, PLRU, and Random replacement policies. Includes **hardware prefetchers** (NextLine and Stride) to reduce memory latency.
 * **DRAM Controller:** Simulates timing constraints including row-buffer conflicts, CAS/RAS latency, and precharge penalties.
 
 ### System Software (C & Assembly)
@@ -30,7 +30,7 @@ This project is a cycle-accurate system simulator for the RISC-V 64-bit architec
 
 ### Performance Analysis
 
-* **Automated Benchmarking:** Python scripts to sweep hardware parameters (e.g., cache size vs. IPC) and visualize bottlenecks.
+* **Automated Benchmarking:** Python scripts to sweep hardware parameters (e.g., pipeline width, cache size vs. IPC) and visualize bottlenecks.
 * **Design Space Exploration:** Includes a genetic algorithm script to evolve hardware configurations for optimal performance on specific workloads.
 
 ## Project Structure
@@ -54,7 +54,7 @@ make all
 **Run a Simulation:**
 Execute a binary inside the simulator.
 ```bash
-./sim chess
+./scripts/sim mandelbrot
 ```
 
 **Run Analysis:**
